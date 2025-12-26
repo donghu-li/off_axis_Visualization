@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>离轴渲染演示</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: sans-serif; user-select: none; }
+        canvas { display: block; position: absolute; top: 0; left: 0; z-index: 1; cursor: grab; }
+        canvas:active { cursor: grabbing; }
+        #container { position: absolute; top: 0; left: 0; display: flex; width: 100vw; height: 100vh; z-index: 10; pointer-events: none; }
+        #left-view, #right-view { flex: 1; position: relative; border-right: 1px solid #333; }
+        .label { position: absolute; top: 10px; left: 10px; background: rgba(0, 0, 0, 0.8); color: #fff; padding: 10px; border: 1px solid #555; pointer-events: auto; }
+        .highlight { color: #ff0; font-weight: bold; }
+        .tip { font-size: 12px; color: #aaa; margin-top: 5px; }
+    </style>
+    <script src="https://cdn.staticfile.net/three.js/r128/three.min.js"></script>
+</head>
+<body>
+    <div id="container">
+        <div id="left-view">
+            <div class="label">
+                上帝视角<br>
+                <span class="highlight">黄色线：连接相机与屏幕四角</span><br>
+                <div class="tip">小球出屏，立方体入屏</div>
+            </div>
+        </div>
+        <div id="right-view">
+            <div class="label">相机视角 (拖拽鼠标移动)</div>
+        </div>
+    </div>
+
+    <script>
+        let headX = 0;
+        let isDragging = false;
+        let previousMouseX = 0;
+
+        function init() {
+            // ================= 1. 基础设置 =================
+            const SCREEN_WIDTH = 8.0;
+            const SCREEN_HEIGHT = 6.0;
+            const SCREEN_Z = -10.0; 
+
+            const scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x111111);
+
+            const renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setScissorTest(true);
+            document.body.appendChild(renderer.domElement);
+
+            // ================= 2. 屏幕与物体 (已调整) =================
+            // 红色屏幕
+            const screenGeo = new THREE.PlaneGeometry(SCREEN_WIDTH, SCREEN_HEIGHT, 8, 6);
+            const screenMesh = new THREE.Mesh(screenGeo, new THREE.MeshBasicMaterial({ color: 0xff0000, wireframe: true, opacity: 0.4, transparent: true }));
+            screenMesh.position.set(0, 0, SCREEN_Z);
+            scene.add(screenMesh);
+
+            // 屏幕边框
+            const borderLines = new THREE.LineSegments(
+                new THREE.EdgesGeometry(screenGeo),
+                new THREE.LineBasicMaterial({ color: 0xff0000, linewidth: 2 })
+            );
+            borderLines.position.set(0, 0, SCREEN_Z);
+            scene.add(borderLines);
+
+            // --- 修改点：物体归中且拉近 ---
+            
+            // 绿球：放在 (0,0)，Z轴设为 SCREEN_Z + 1.5 (紧贴屏幕前方)
+            const sphere = new THREE.Mesh(new THREE.SphereGeometry(0.8, 16, 16), new THREE.MeshBasicMaterial({ color: 0x00ff00, wireframe: true }));
+            sphere.position.set(0, 0, SCREEN_Z + 1.5); 
+            scene.add(sphere);
+
+            // 蓝方块：放在 (0,0)，Z轴设为 SCREEN_Z - 2.0 (紧贴屏幕后方)
+            // 稍微把方块改小一点(1.2)，避免视觉上太满
+            const box = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.2, 1.2), new THREE.MeshBasicMaterial({ color: 0x00ffff, wireframe: true }));
+            box.position.set(0, 0, SCREEN_Z - 2.0); 
+            scene.add(box);
+
+            // ================= 3. 相机与验证辅助线 =================
+            
+            const virtualCamera = new THREE.PerspectiveCamera(50, 1, 0.1, 30);
+            scene.add(virtualCamera);
+
+            const camHelper = new THREE.CameraHelper(virtualCamera);
+            camHelper.material = new THREE.LineBasicMaterial({ color: 0x00ff00 }); 
+            scene.add(camHelper);
+
+            // 黄色验证线
+            const verificationGeo = new THREE.BufferGeometry();
+            const verificationMat = new THREE.LineBasicMaterial({ color: 0xffff00 }); 
+            const positions = new Float32Array(4 * 2 * 3); 
+            verificationGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            const verificationLines = new THREE.LineSegments(verificationGeo, verificationMat);
+            scene.add(verificationLines);
+
+            // 上帝相机
+            const observerCamera = new THREE.PerspectiveCamera(40, window.innerWidth/2/window.innerHeight, 1, 1000);
+            observerCamera.position.set(0, 40, 5); 
+            observerCamera.lookAt(0, 0, SCREEN_Z);
+
+            // ================= 4. 交互与动画 =================
+            
+            document.addEventListener('mousedown', e => { isDragging = true; previousMouseX = e.clientX; });
+            document.addEventListener('mouseup', () => isDragging = false);
+            document.addEventListener('mousemove', e => {
+                if (isDragging) {
+                    headX += (e.clientX - previousMouseX) * 0.03;
+                    headX = Math.max(-12, Math.min(12, headX)); // 限制范围
+                    previousMouseX = e.clientX;
+                }
+            });
+
+            function animate() {
+                requestAnimationFrame(animate);
+
+                // 1. 更新位置
+                virtualCamera.position.set(headX, 0, 0);
+                virtualCamera.updateMatrixWorld();
+
+                // 2. 离轴计算
+                const dist = virtualCamera.position.z - SCREEN_Z; 
+                const near = virtualCamera.near;
+                const scale = near / dist;
+
+                const leftDist   = (-SCREEN_WIDTH / 2) - headX;
+                const rightDist  = ( SCREEN_WIDTH / 2) - headX;
+                const topDist    = ( SCREEN_HEIGHT / 2) - 0;
+                const bottomDist = (-SCREEN_HEIGHT / 2) - 0;
+
+                const left   = leftDist * scale;
+                const right  = rightDist * scale;
+                const top    = topDist * scale;
+                const bottom = bottomDist * scale;
+
+                virtualCamera.projectionMatrix.makePerspective(left, right, top, bottom, near, virtualCamera.far);
+
+                // 3. 辅助线更新
+                camHelper.update();
+
+                const vPos = verificationLines.geometry.attributes.position.array;
+                const camPos = virtualCamera.position;
+                
+                // 线1
+                vPos[0]=camPos.x; vPos[1]=camPos.y; vPos[2]=camPos.z;
+                vPos[3]=-SCREEN_WIDTH/2; vPos[4]=SCREEN_HEIGHT/2; vPos[5]=SCREEN_Z;
+                // 线2
+                vPos[6]=camPos.x; vPos[7]=camPos.y; vPos[8]=camPos.z;
+                vPos[9]=SCREEN_WIDTH/2; vPos[9+1]=SCREEN_HEIGHT/2; vPos[9+2]=SCREEN_Z;
+                // 线3
+                vPos[12]=camPos.x; vPos[13]=camPos.y; vPos[14]=camPos.z;
+                vPos[15]=-SCREEN_WIDTH/2; vPos[16]=-SCREEN_HEIGHT/2; vPos[17]=SCREEN_Z;
+                // 线4
+                vPos[18]=camPos.x; vPos[19]=camPos.y; vPos[20]=camPos.z;
+                vPos[21]=SCREEN_WIDTH/2; vPos[22]=-SCREEN_HEIGHT/2; vPos[23]=SCREEN_Z;
+
+                verificationLines.geometry.attributes.position.needsUpdate = true;
+
+                // 4. 渲染
+                const w = window.innerWidth;
+                const h = window.innerHeight;
+
+                renderer.setScissor(0, 0, w/2, h);
+                renderer.setViewport(0, 0, w/2, h);
+                camHelper.visible = true;
+                verificationLines.visible = true;
+                renderer.render(scene, observerCamera);
+
+                renderer.setScissor(w/2, 0, w/2, h);
+                renderer.setViewport(w/2, 0, w/2, h);
+                camHelper.visible = false;
+                verificationLines.visible = false;
+                renderer.render(scene, virtualCamera);
+            }
+
+            animate();
+
+            window.addEventListener('resize', () => {
+                const w = window.innerWidth;
+                const h = window.innerHeight;
+                renderer.setSize(w, h);
+                observerCamera.aspect = (w/2) / h;
+                observerCamera.updateProjectionMatrix();
+            });
+        }
+        init();
+    </script>
+</body>
+</html>
